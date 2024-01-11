@@ -399,7 +399,6 @@ auto backwards_normal_idx(const std::vector<cvl::Vector3<float>>& points, const 
             idxs.push_back(i);
         }
     }
-//    std::cout << "Kept count: " << idxs.size() << " out of " << points.size() << std::endl;
     return idxs;
 }
 
@@ -453,9 +452,6 @@ auto reproject_score(std::vector<cv::Point2f> imgpoints, const std::vector<cv::P
         reprojected_point[1] += config.principal_point.y;
         reprojected_points.emplace_back(reprojected_point[0], reprojected_point[1]);
     }
-//    cv::Vec3f rvec;
-//    cv::Rodrigues(R, rvec);
-//    cv::projectPoints(worldpoints, rvec, tvec, config.camera_matrix, config.distortion_coefficients, reprojected_points);
     return std::make_tuple(fast_score(imgpoints, reprojected_points), reprojected_points);
 }
 
@@ -463,7 +459,6 @@ auto draw_assignment(const std::vector<cv::Point2f>& imgpoints, const std::vecto
     auto img_with_points = img.clone();
 
     for (int i = 0; i < imgpoints.size(); ++i) {
-//        cv::circle(img_with_points, imgpoints[i], 3, cv::Scalar(0, 0, 255), 1);
         cv::circle(img_with_points, reprojected_points[i], 3, cv::Scalar(255, 255, 0), 1);
         cv::line(img_with_points, imgpoints[i], reprojected_points[i], cv::Scalar(0, 0, 255));
     }
@@ -504,8 +499,6 @@ auto generate_assignation(const std::vector<cvl::Vector3f>& imgpoints, const std
     auto score = fast_score(imgpoints, reprojected_points);
 
     std::cout << "Score: " << score << std::endl;
-//    cv::imshow("img", img);
-//    cv::waitKey(0);
     return assignment_orig;
 }
 
@@ -553,8 +546,7 @@ bruteforce_match_pnp(std::vector<cv::Point2f> imgpoints, const std::vector<cv::P
     auto start_time = std::chrono::high_resolution_clock::now();
     std::vector<cvl::Matrix<float, 3, 3>> best_Rs_all(idxs.size());
     std::vector<cvl::Vector3<float>> best_Ts_all(idxs.size());
-# pragma omp parallel num_threads(4)
-# pragma omp for schedule(dynamic, 1)
+# pragma omp parallel for schedule(dynamic, 1) num_threads(4)
     for (int i = 0; i < idxs.size(); i++) {
         auto Rs = cvl::Vector<cvl::Matrix<float, 3, 3>, 4>();
         auto Ts = cvl::Vector<cvl::Vector3<float>, 4>();
@@ -596,10 +588,7 @@ bruteforce_match_pnp(std::vector<cv::Point2f> imgpoints, const std::vector<cv::P
         best_Ts_all[i] = Ts[best_idx];
         best_Rs_all[i] = Rs[best_idx];
     }
-# pragma omp single
 
-    long best_idx = std::min_element(scores.begin(), scores.end()) - scores.begin();
-//    long best_idx = std::min_element(scores.begin(), scores.end()) - scores.begin();
     // Sort idxs by score
     std::vector<int> idxs_sorted(idxs.size());
     std::iota(idxs_sorted.begin(), idxs_sorted.end(), 0);
@@ -651,178 +640,13 @@ bruteforce_match_pnp(std::vector<cv::Point2f> imgpoints, const std::vector<cv::P
     cv::Mat1f rMat;
     cv::Rodrigues(rvec_, rMat);
     std::vector<cv::Point2f> reproj_points;
-//    std::tie(score, reproj_points) = reproject_score(imgpoints_orig, worldpoints_kept, config, rMat, cv::Mat1f(tvec_));
+//    std::tie(score, reproj_points) = reproject_score(imgpoints_orig, worldpoints_kept, config, rMat, cv::Mat1f(tvec_)); (In case you wanna try refinement)
     std::tie(score, reproj_points) = reproject_score(imgpoints_orig, worldpoints_kept, config, best_Rs_cv, best_T_cv);
     draw_assignment(imgpoints_kept, reproj_points, img);
     std::cout << "Score: " << score << std::endl;
     return 0;
-
-    /*
-    std::vector<cvl::Vector3<float>> reprojected_points(worldpoints_cvl.size());
-    reprojected_points.clear();
-    for (const auto& point : worldpoints_cvl) {
-        reprojected_points.push_back(best_Rs * point + best_Ts);
-    }
-    for (auto& point : reprojected_points) {
-        point /= point[2];
-    }
-    for (auto& point : reprojected_points) {
-        point[0] *= config.focal_lengths.x;
-        point[1] *= config.focal_lengths.y;
-        point[0] += config.principal_point.x;
-        point[1] += config.principal_point.y;
-    }
-//    auto img_with_points = draw_img_with_points(img, (imgpoints_orig));
-    std::vector<cv::Point2f> reprojected_points_cv;
-    for (auto& point : reprojected_points){
-        reprojected_points_cv.emplace_back(point[0], point[1]);
-    }
-    // Now, let's remove occluded LEDs, and refine the pose
-//    auto normals_cvl = std::vector<cvl::Vector3<float>>();
-//    for (auto &normal: normals) {
-//        normals_cvl.emplace_back(normal.x, normal.y, normal.z);
-//    }
-    auto posed_points = std::vector<cvl::Vector3<float>>();
-    auto posed_normals = std::vector<cvl::Vector3<float>>();
-    for (int i = 0; i < worldpoints_cvl.size(); ++i) {
-        posed_points.emplace_back(best_Rs * wo4rldpoints_cvl[i] + best_Ts);
-        posed_normals.emplace_back(best_Rs * normals_cvl[i]);
-    }
-    auto kept_idx = backwards_normal_idx(posed_points, posed_normals, best_Rs);
-    auto kept_reprojected_points = std::vector<cvl::Vector3<float>>();
-    std::vector<cv::Point3f> kept_worldpoints;
-
-    for (auto idx : kept_idx){
-        kept_worldpoints.emplace_back(worldpoints[idx].x, worldpoints[idx].y, worldpoints[idx].z);
-        kept_reprojected_points.emplace_back(reprojected_points[idx][0], reprojected_points[idx][1], 1);
-    }
-
-    std::vector<float> neutral_distortion = {0, 0, 0, 0};
-
-    // Now let's assign imgpoints and worldpoints
-    auto assign_start = std::chrono::high_resolution_clock::now();
-    auto assignment = assign(imgpoints_orig_cvl, kept_reprojected_points);
-    auto assign_end = std::chrono::high_resolution_clock::now();
-    auto assign_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(assign_end - assign_start);
-    std::cout << "Assignment time: " << assign_duration.count() << "ns" << std::endl;
-    // Let's then use opencv SQPNP to refine the pose
-    auto rvec = std::vector<float>(3);
-    auto tvec = std::vector<float>(best_Ts.data(), best_Ts.data() + 3);
-    auto Rmat = cv::Mat(3, 3, CV_32F, best_Rs.data());
-    cv::Rodrigues(Rmat, rvec);
-    std::vector<cv::Point3f> kept_worldpoints_ord;
-    std::vector<cv::Point2f> kept_imgpoints_ord;
-    std::vector<cvl::Vector3<float>> kept_imgpoints_ord_cvl;
-    for (int i = 1; i < assignment.size(); ++i) {
-        if (assignment[i] != -1){
-            std::cout << imgpoints_orig[i-1] << " =:= " << kept_reprojected_points[assignment[i]-1][0] << " " << kept_reprojected_points[assignment[i]-1][1] << std::endl;
-            kept_imgpoints_ord.push_back(imgpoints_orig[i-1]);
-            kept_imgpoints_ord_cvl.push_back(imgpoints_orig_cvl[i-1]);
-            kept_worldpoints_ord.emplace_back(kept_worldpoints[assignment[i]-1].x, kept_worldpoints[assignment[i]-1].y, kept_worldpoints[assignment[i]-1].z);
-        }
-    }
-    auto sampled_worldpoints = std::vector<cv::Point3f>();
-    for (int i = 0; i < 3; i++){
-        sampled_worldpoints.emplace_back(worldpoints[idxs[best_idx][i]].x, worldpoints[idxs[best_idx][i]].y, worldpoints[idxs[best_idx][i]].z);
-    }
-    std::cout << hungarian_score(kept_imgpoints_ord_cvl, kept_reprojected_points) << std::endl;
-    auto rvec_ = cv::Vec3f();
-    auto tvec_ = cv::Vec3f();
-    auto sol = cv::solvePnP(kept_worldpoints_ord, kept_imgpoints_ord, config.camera_matrix, neutral_distortion, rvec, tvec, false, cv::SOLVEPNP_SQPNP);
-
-    // Let's now reproject the points
-    cv::Rodrigues(rvec, Rmat);
-    cv::projectPoints(kept_worldpoints, rvec, tvec, config.camera_matrix, neutral_distortion, reprojected_points_cv);
-
-    std::vector<cv::Point2f> kept_reproj;
-    std::vector<cv::Point2f> kept_imgpoints;
-
-    for (int i = 1; i < assignment.size(); ++i) {
-        if (assignment[i] != -1){
-            kept_imgpoints.push_back(imgpoints_orig[i-1]);
-            kept_reproj.push_back(reprojected_points_cv[assignment[i]-1]);
-        }
-    }
-
-    cv::Mat img_with_lines = img.clone();
-
-    for(int i = 0; i < kept_imgpoints.size(); i++){
-        cv::line(img_with_lines, kept_imgpoints[i], kept_reproj[i], cv::Scalar(0, 255, 0), 2);
-    }
-
-    auto img_with_points = draw_img_with_points(img_with_lines, imgpoints_orig, cv::Scalar(0, 255, 0), 6);
-    auto img_with_points_all = draw_img_with_points(img_with_points, reprojected_points_cv , cv::Scalar(255, 0, 0), 6);
-    cv::imshow("img-reproj", img_with_points_all);
-    cv::waitKey(0);
-    return 0;
-     */
-
 }
 
-auto
-bruteforce_match_pnp_cv(std::vector<cv::Point2f> imgpoints, std::vector<cv::Point3f> worldpoints,camera_config config, cv::Mat& img) {
-    // Choose 3 points from the image at random
-    auto imgpoints_orig = imgpoints;
-    for (auto& point : imgpoints){
-        point = (point - config.principal_point);
-        point.x /= config.focal_lengths.x;
-        point.y /= config.focal_lengths.y;
-    }
-    std::vector<cv::Point2f> imgpoints_sample;
-    std::sample(imgpoints.begin(), imgpoints.end(), std::back_inserter(imgpoints_sample), 3,
-                std::mt19937{std::random_device{}()});
-    // Then try to match them to all length 3 subsets of the world points
-    auto idxs = get_k_permutation_idx(3, worldpoints.size());
-    auto worldpoints_sample = std::vector<cv::Point3f>();
-
-    cv::Mat neutral_distortion = cv::Mat::zeros(4, 1, CV_64F);
-    cv::Mat neutral_camera_matrix = cv::Mat::eye(3, 3, CV_64F);
-
-    config.distortion_coefficients = neutral_distortion;
-    config.camera_matrix = neutral_camera_matrix;
-
-    auto rvecs = std::vector<cv::Mat>();
-    auto tvecs = std::vector<cv::Mat>();
-    auto Rs = cvl::Vector<cvl::Matrix<float, 3, 3>, 4>();
-    auto Ts = cvl::Vector<cvl::Vector3<float>, 4>();
-    int scount = 0;
-    float best_score = INT_MAX;
-    std::vector<cv::Point2f> best_reprojected_points;
-    for (int z = 0; z < idxs.size(); z++) {
-        auto& idx = idxs[z];
-        worldpoints_sample.clear();
-        rvecs.clear();
-        tvecs.clear();
-        for (auto i: idx) {
-            worldpoints_sample.push_back(worldpoints[i]);
-        }
-        scount += cv::solveP3P(worldpoints_sample, imgpoints_sample, config.camera_matrix,
-                                    config.distortion_coefficients, rvecs, tvecs, cv::SOLVEPNP_AP3P);
-        for (int i = 0; i < rvecs.size(); ++i) {
-            auto reprojected_points = std::vector<cv::Point2f>();
-            cv::projectPoints(worldpoints, rvecs[i], tvecs[i], config.camera_matrix, config.distortion_coefficients,
-                              reprojected_points);
-            for (auto& point : reprojected_points) {
-                point.x *= config.focal_lengths.x;
-                point.y *= config.focal_lengths.y;
-                point = (point + config.principal_point);
-            }
-            auto score = fast_score(imgpoints_orig, reprojected_points);
-            best_score = std::min(best_score, score);
-            if (score == best_score) {
-                best_idxz = z;
-                best_reprojected_points = reprojected_points;
-            }
-        }
-    }
-    auto img_with_points = draw_img_with_points(img, best_reprojected_points);
-    auto img_with_points_all = draw_img_with_points(img_with_points, imgpoints_orig, cv::Scalar(255, 0, 0), 6);
-    cv::imshow("img-reproj", img_with_points_all);
-    cv::waitKey(0);
-    std::cout << "--" << scount << "----" << best_score << std::endl;
-    return 0;
-
-}
 
 std::vector<std::string> list_all_files(const std::string& folder_path){
     auto files = std::vector<std::string>();
