@@ -11,6 +11,7 @@
 
 #include "p3p/p3p.h"
 #include "hungarian.h"
+#include "dbscan/dbscan.hpp"
 
 const float n_thresh = 0.1;
 
@@ -146,6 +147,27 @@ std::array<camera_config, 4> camera_configs_from_file(const std::string& filepat
         // params are k1, k2, p1, p2, k3, k4, k5, k6, codx, cody, rpmax
 
     }
+}
+
+std::vector<std::vector<cv::KeyPoint>> cluster_controllers_dbscan(std::vector<cv::KeyPoint> keypoints){
+    std::vector<point2> points;
+    for (auto& keypoint : keypoints){
+        points.push_back(point2{keypoint.pt.x, keypoint.pt.y});
+    }
+    auto clusters = dbscan(points, 50, 3);
+    auto ret = std::vector<std::vector<cv::KeyPoint>>();
+    for (auto& cluster : clusters){
+        auto cluster_keypoints = std::vector<cv::KeyPoint>();
+        for (auto& idx : cluster){
+            cluster_keypoints.push_back(keypoints[idx]);
+        }
+        ret.push_back(cluster_keypoints);
+    }
+    // Now sort by x
+    std::sort(ret.begin(), ret.end(), [](const std::vector<cv::KeyPoint>& a, const std::vector<cv::KeyPoint>& b){
+        return a[0].pt.x < b[0].pt.x;
+    });
+    return ret;
 }
 
 std::vector<std::vector<cv::KeyPoint>> cluster_controllers(std::vector<cv::KeyPoint> keypoints) {
@@ -293,7 +315,7 @@ float fast_score(const std::vector<cvl::Vector3<float>>& a, const std::vector<cv
         }
         dist_sum += min_dist;
     }
-    return dist_sum;
+    return dist_sum / std::min(a.size(), b.size());
 }
 
 float fast_score(const std::vector<cv::Point2f>& a, const std::vector<cv::Point2f>& b){
@@ -308,7 +330,7 @@ float fast_score(const std::vector<cv::Point2f>& a, const std::vector<cv::Point2
         }
         dist_sum += min_dist;
     }
-    return dist_sum;
+    return dist_sum / std::min(a.size(), b.size());
 }
 
 std::vector<int> assign(const std::vector<cvl::Vector3<float>>& a, const std::vector<cvl::Vector3<float>>& b){
@@ -462,8 +484,8 @@ auto draw_assignment(const std::vector<cv::Point2f>& imgpoints, const std::vecto
         cv::circle(img_with_points, reprojected_points[i], 3, cv::Scalar(255, 255, 0), 1);
         cv::line(img_with_points, imgpoints[i], reprojected_points[i], cv::Scalar(0, 0, 255));
     }
-    cv::imshow("img_with_points", img_with_points);
-    cv::waitKey(0);
+//    cv::imshow("img_with_points", img_with_points);
+//    cv::waitKey(0);
     return img_with_points;
 }
 
@@ -546,7 +568,7 @@ bruteforce_match_pnp(std::vector<cv::Point2f> imgpoints, const std::vector<cv::P
     auto start_time = std::chrono::high_resolution_clock::now();
     std::vector<cvl::Matrix<float, 3, 3>> best_Rs_all(idxs.size());
     std::vector<cvl::Vector3<float>> best_Ts_all(idxs.size());
-# pragma omp parallel for schedule(dynamic, 1) num_threads(4)
+# pragma omp parallel for schedule(dynamic, 1) num_threads(8)
     for (int i = 0; i < idxs.size(); i++) {
         auto Rs = cvl::Vector<cvl::Matrix<float, 3, 3>, 4>();
         auto Ts = cvl::Vector<cvl::Vector3<float>, 4>();
@@ -640,11 +662,11 @@ bruteforce_match_pnp(std::vector<cv::Point2f> imgpoints, const std::vector<cv::P
     cv::Mat1f rMat;
     cv::Rodrigues(rvec_, rMat);
     std::vector<cv::Point2f> reproj_points;
-//    std::tie(score, reproj_points) = reproject_score(imgpoints_orig, worldpoints_kept, config, rMat, cv::Mat1f(tvec_)); (In case you wanna try refinement)
-    std::tie(score, reproj_points) = reproject_score(imgpoints_orig, worldpoints_kept, config, best_Rs_cv, best_T_cv);
+    std::tie(score, reproj_points) = reproject_score(imgpoints_orig, worldpoints_kept, config, rMat, cv::Mat1f(tvec_));
+//    std::tie(score, reproj_points) = reproject_score(imgpoints_orig, worldpoints_kept, config, best_Rs_cv, best_T_cv);
     draw_assignment(imgpoints_kept, reproj_points, img);
     std::cout << "Score: " << score << std::endl;
-    return 0;
+    return score;
 }
 
 
@@ -680,15 +702,20 @@ int main() {
 
     auto cloud_l = get_wmr_pointccloud("/home/samyr/Downloads/2023-04-07-windows-short-beatsaber-session/configs/reverb_g2_left.json");
     auto cloud_r = get_wmr_pointccloud("/home/samyr/Downloads/2023-04-07-windows-short-beatsaber-session/configs/reverb_g2_right.json");
+    auto camera_config_og = get_camera_config_file("/home/samyr/Downloads/2023-04-07-windows-short-beatsaber-session/configs/reverbg2.json", 1);
+
+    float score_sum = 0;
+    int score_count = 0;
 
     for (auto& f : files){
+        auto camera_config = camera_config_og;
+
         get_frame_capture(f, frames);
         frames[1] = frames[1] - 5;
         frames[1] = frames[1] * 6;
 
 
         // lets undistort
-        auto camera_config = get_camera_config_file("/home/samyr/Downloads/2023-04-07-windows-short-beatsaber-session/configs/reverbg2.json", 1);
         cv::undistort(frames[1].clone(), frames[1], get_camera_config().camera_matrix, get_camera_config().distortion_coefficients);
 
         // Remove distortion from config now
@@ -696,34 +723,55 @@ int main() {
 
         auto blobs = get_blobs(frames[1]);
         // Try to cluster blobs
-        auto clusters = cluster_controllers(blobs);
+        auto clusters = cluster_controllers_dbscan(blobs);
         std::cout << clusters.size() << std::endl;
+
+        if (clusters.size() == 0)
+            continue;
 
 
         auto img_with_keypoints = draw_img_keypoints(frames[1], clusters[0], cv::Scalar(0, 255, 0));
         if (clusters.size() > 1)
             img_with_keypoints = draw_img_keypoints(img_with_keypoints, clusters[1], cv::Scalar(255, 0, 0));
 
-        int idx = 0;
-        if (clusters.size() > 1)
-            idx = 1;
+        auto img_track = img_with_keypoints.clone();
 
-        if (true){
-            if (clusters[idx].size() <= 3)
+        for(int idx = 0; idx < clusters.size(); idx++){
+            if (clusters[idx].size() <= 5)
                 continue;
+            // Try with the right controller first
+            auto img_r = img_track.clone();
             auto imgpoints = keypoints_to_points(clusters[idx]);
             auto worldpoints = cloud_r.points;
             auto normals = cloud_r.normals;
             auto rvec = cv::Mat();
             auto tvec = cv::Mat();
             auto start = std::chrono::high_resolution_clock::now();
-            bruteforce_match_pnp(imgpoints, worldpoints, normals, camera_config, img_with_keypoints.clone());
+            auto score_r = bruteforce_match_pnp(imgpoints, worldpoints, normals, camera_config, img_r);
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+            std::cout << "Total runtime " << duration.count() << "us" << std::endl;
+            // Then the left controller
+            auto img_l = img_with_keypoints.clone();
+            worldpoints = cloud_l.points;
+            normals = cloud_l.normals;
+            auto score_l = bruteforce_match_pnp(imgpoints, worldpoints, normals, camera_config, img_l);
+            std::cout << "Score: [R] " << score_r << " [L]" << score_l << std::endl;
 
+            auto minscore = std::min(score_r, score_l);
+            score_sum += minscore;
+            score_count += 1;
+
+            if (score_r < score_l){
+                img_track = img_r;
+            } else {
+                img_track = img_l;
+            }
         }
 
         cv::imshow("img", img_with_keypoints);
+        cv::imshow("img_track", img_track);
         cv::waitKey(0);
     }
+    std::cout << "Average reprojection error (average point distance): " << score_sum / score_count << std::endl;
 }

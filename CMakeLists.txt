@@ -4,7 +4,7 @@ project(controller_tracking)
 set(CMAKE_CXX_STANDARD 20)
 
 # set O3 optimization and enable AVX
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -mavx -mavx2 -mfma -fopenmp")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O4 -mavx -mavx2 -mfma -fopenmp")
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -fopenmp")
 
 # use OpenCV
@@ -31,6 +31,8 @@ add_executable(controller_tracking main.cpp
         p3p/refine_lambda.h
         p3p/matrix.h
         p3p/solve_eig0.h
-        hungarian.h)
+        hungarian.h
+        dbscan/nanoflann/nanoflann.hpp
+        dbscan/dbscan.cpp)
 
 target_link_libraries(controller_tracking ${OpenCV_LIBS} ${Boost_LIBRARIES} nlohmann_json::nlohmann_json)
